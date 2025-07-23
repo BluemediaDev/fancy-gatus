@@ -33,7 +33,7 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.11",
-    "axios": "^1.9.0",
+    "axios": "^1.11.0",
     "bootstrap-icons": "^1.13.1",
     "daisyui": "^5.0.46",
     "tailwindcss": "^4.1.8"
