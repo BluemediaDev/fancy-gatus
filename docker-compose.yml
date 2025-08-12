@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  fancy-gatus:
+    build: .
+    container_name: fancy-gatus
+    ports:
+      - "3000:80"
+    environment:
+      # Basic configuration
+      CONFIG_TITLE: "My Infrastructure Status"
+      CONFIG_GATUS_BASE_URL: "https://status.example.com"
+      CONFIG_HIDE_URLS: "false"
+      CONFIG_HIDE_FOOTER: "false"
+      
+      # Groups and statuses configuration
+      CONFIG_HIDDEN_GROUPS: ""
+      CONFIG_HIDDEN_STATUSES: ""
+      CONFIG_GROUP_ORDER: ""
+      CONFIG_DEFAULT_EXPAND_GROUPS: "false"
+      CONFIG_DEFAULT_REFRESH_INTERVAL: "60"
+      
+      # Notice configuration (optional)
+      CONFIG_NOTICE_TYPE: ""
+      CONFIG_NOTICE_TITLE: ""
+      CONFIG_NOTICE_CONTENT: ""
+      CONFIG_NOTICE_CREATED_AT: ""
+      CONFIG_NOTICE_UPDATED_AT: ""
+      
+      # API proxy (optional)
+      GATUS_API_URL: ""
+      
+      # Nginx port
+      NGINX_PORT: "80"
+      
+      # Timezone
+      TZ: "UTC"
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped

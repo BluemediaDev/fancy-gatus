@@ -11,14 +11,19 @@
   import EndpointGroup from '$lib/components/StatusGroup.svelte'
   import RefreshSettings from '$lib/components/RefreshSettings.svelte'
   import Footer from '$lib/components/Footer.svelte'
+  import ErrorDisplay from '$lib/components/ErrorDisplay.svelte'
 
   let loading = $state(true)
+  let error: Error | null = $state(null)
   let config: Config = $state({})
   let apiData: Status[] = $state([])
 
   async function getConfig() {
     try {
-      const response = await axios.get('config.json', { baseURL: '/' })
+      const response = await axios.get('config.json', {
+        baseURL: '/',
+        timeout: 10000 // 10 second timeout
+      })
 
       config = response.data
       // Set title if defined in config
@@ -29,8 +34,10 @@
       const error = err as AxiosError
       if (error.response && error.response.status === 404) {
         console.warn('No config.json file found. Using default values.')
+      } else {
+        console.warn('Error getting config:', error.message)
       }
-      console.log('Error getting config: ' + error)
+      // Don't set error state for config failures, just use defaults
     }
   }
 
@@ -41,17 +48,46 @@
     }
 
     try {
-      const response = await axios.get('/api/v1/endpoints/statuses')
+      error = null // Clear any previous errors
+      const response = await axios.get('/api/v1/endpoints/statuses', {
+        timeout: 15000 // 15 second timeout for API calls
+      })
       apiData = response.data
       loading = false
-    } catch (error) {
-      console.log(error)
+    } catch (err) {
+      const axiosError = err as AxiosError
+      error = axiosError
+      loading = false
+      console.error('Failed to fetch API data:', axiosError)
+      
+      // Log detailed error information for debugging
+      if (axiosError.response) {
+        console.error('Response error:', {
+          status: axiosError.response.status,
+          statusText: axiosError.response.statusText,
+          data: axiosError.response.data
+        })
+      } else if (axiosError.request) {
+        console.error('Request error - no response received:', {
+          url: axiosError.config?.url,
+          baseURL: axiosError.config?.baseURL,
+          timeout: axiosError.config?.timeout
+        })
+      } else {
+        console.error('Error:', axiosError.message)
+      }
     }
   }
 
   async function refresh() {
+    loading = true
+    error = null
     await getConfig()
     await getApiData()
+  }
+
+  function retryConnection() {
+    refresh()
   }
 
   // Group statuses by their group name
@@ -108,6 +144,16 @@
 
 {#if loading}
   <Loader />
+{:else if error}
+  <Header title={config.title} />
+  {#if config.notice}
+    <Notice notice={config.notice} />
+  {/if}
+  <ErrorDisplay {error} retry={retryConnection} />
+  <RefreshSettings defaultRefreshInterval={config.defaultRefreshInterval} onRefresh={refresh} />
+  {#if !config.hideFooter}
+    <Footer />
+  {/if}
 {:else}
   <Header title={config.title} />
   {#if config.notice}
@@ -119,8 +165,11 @@
       title={group.title}
       statuses={group.statuses}
       expandByDefault={config.defaultExpandGroups}
+      {config}
     />
   {/each}
   <RefreshSettings defaultRefreshInterval={config.defaultRefreshInterval} onRefresh={refresh} />
-  <Footer />
+  {#if !config.hideFooter}
+    <Footer />
+  {/if}
 {/if}

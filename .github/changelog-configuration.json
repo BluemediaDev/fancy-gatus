@@ -2,21 +2,106 @@
   "categories": [
     {
       "title": "## 🚀 Features",
-      "labels": ["enhancement"]
+      "labels": ["enhancement", "feature"],
+      "rules": [
+        {
+          "pattern": "^feat(\\(.+\\))?:",
+          "on_property": "title"
+        }
+      ]
     },
     {
-      "title": "## 🐛 Fixes",
-      "labels": ["bug"]
+      "title": "## 🐛 Bug Fixes",
+      "labels": ["bug", "fix"],
+      "rules": [
+        {
+          "pattern": "^fix(\\(.+\\))?:",
+          "on_property": "title"
+        }
+      ]
+    },
+    {
+      "title": "## 📚 Documentation",
+      "labels": ["documentation"],
+      "rules": [
+        {
+          "pattern": "^docs(\\(.+\\))?:",
+          "on_property": "title"
+        }
+      ]
+    },
+    {
+      "title": "## 🎨 Code Style",
+      "labels": ["style"],
+      "rules": [
+        {
+          "pattern": "^style(\\(.+\\))?:",
+          "on_property": "title"
+        }
+      ]
+    },
+    {
+      "title": "## ♻️ Refactoring",
+      "labels": ["refactor"],
+      "rules": [
+        {
+          "pattern": "^refactor(\\(.+\\))?:",
+          "on_property": "title"
+        }
+      ]
+    },
+    {
+      "title": "## ⚡ Performance",
+      "labels": ["performance"],
+      "rules": [
+        {
+          "pattern": "^perf(\\(.+\\))?:",
+          "on_property": "title"
+        }
+      ]
+    },
+    {
+      "title": "## ✅ Tests",
+      "labels": ["test"],
+      "rules": [
+        {
+          "pattern": "^test(\\(.+\\))?:",
+          "on_property": "title"
+        }
+      ]
+    },
+    {
+      "title": "## 🔧 Build & CI",
+      "labels": ["build", "ci"],
+      "rules": [
+        {
+          "pattern": "^(build|ci)(\\(.+\\))?:",
+          "on_property": "title"
+        }
+      ]
     },
     {
       "title": "## ⤵️ Dependencies",
-      "labels": ["dependencies"]
+      "labels": ["dependencies"],
+      "rules": [
+        {
+          "pattern": "^(chore|deps)(\\(.+\\))?:",
+          "on_property": "title"
+        }
+      ]
     },
     {
-      "title": "## 💭 Uncategorized",
+      "title": "## 💭 Other Changes",
       "labels": []
     }
   ],
   "template": "#{{CHANGELOG}}",
-  "pr_template": "* #{{TITLE}} by @#{{AUTHOR}} in ##{{NUMBER}}"
+  "pr_template": "* #{{TITLE}} by @#{{AUTHOR}} in ##{{NUMBER}}",
+  "empty_template": "No changes",
+  "transformers": [
+    {
+      "pattern": "^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|deps)(\\(.+\\))?:\\s*(.+)",
+      "target": "$3"
+    }
+  ]
 }

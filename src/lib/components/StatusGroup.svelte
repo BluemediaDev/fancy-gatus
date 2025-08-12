@@ -1,11 +1,13 @@
 <script lang="ts">
   import type { Status as StatusType } from '$lib/types/api'
+  import type { Config } from '$lib/types/config'
   import Status from '$lib/components/Status.svelte'
 
   let props: {
     title: string
     statuses: StatusType[]
     expandByDefault?: boolean
+    config?: Config
   } = $props()
 
   let hasFailedStatuses = $derived.by(() => {
@@ -28,7 +30,7 @@
   <div class="collapse-content flex flex-col">
     <ul class="list w-full">
       {#each props.statuses as status (status.key)}
-        <Status {status} />
+        <Status {status} config={props.config} />
       {/each}
     </ul>
   </div>
