@@ -1,8 +1,10 @@
 <script lang="ts">
   import type { Status } from '$lib/types/api'
+  import type { Config } from '$lib/types/config'
 
   let props: {
     status: Status
+    config?: Config
   } = $props()
 
   let isFailed = $derived(!props.status.results[props.status.results.length - 1].success)
@@ -13,7 +15,7 @@
 >
   <p>
     <span class="font-semibold">{props.status.name}</span>
-    {#if props.status.results[props.status.results.length - 1].hostname}
+    {#if !props.config?.hideUrls && props.status.results[props.status.results.length - 1].hostname}
       | {props.status.results[props.status.results.length - 1].hostname}
     {/if}
   </p>

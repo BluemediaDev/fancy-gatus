@@ -1,0 +1,336 @@
+name: Build and Publish Docker Images
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  REGISTRY: ghcr.io
+  REGISTRY_IMAGE: ${{ github.repository_owner }}/fancy-gatus
+
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  build_and_test:
+    name: Build and Test
+    runs-on: ${{ matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture:
+          - amd64
+          - arm64
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Build application
+        run: npm run build
+        
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Get Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix={{branch}}-,enable={{is_default_branch}}
+            type=sha
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+            
+      - name: Build Docker Container
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/${{ matrix.architecture }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          
+      - name: Generate Artifact Attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.REGISTRY_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+          
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-linux-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge_platform_containers:
+    name: Merge Platform Containers
+    runs-on: ubuntu-24.04
+    needs: build_and_test
+    steps:
+      - name: Download Digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+          
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Get Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix={{branch}}-,enable={{is_default_branch}}
+            type=sha
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+            
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          # Debug: List all downloaded files
+          echo "Downloaded digest files:"
+          find . -type f -name "*" | sort
+          
+          # Create manifest list with proper platform annotations
+          TAGS=$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          
+          # Build sources from all digest files
+          SOURCES=""
+          for digest_file in *; do
+            if [ -f "$digest_file" ]; then
+              digest="sha256:${digest_file}"
+              SOURCES="${SOURCES} ${{ env.REGISTRY }}/${{ env.REGISTRY_IMAGE }}@${digest}"
+            fi
+          done
+          
+          # Create manifest list
+          echo "Creating manifest with sources: ${SOURCES}"
+          if [ -n "$SOURCES" ]; then
+            docker buildx imagetools create ${TAGS} ${SOURCES}
+          else
+            echo "ERROR: No digest sources found"
+            exit 1
+          fi
+            
+      - name: Inspect Image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}
+
+  create_release:
+    name: Create GitHub Release
+    runs-on: ubuntu-24.04
+    needs: merge_platform_containers
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          
+      - name: Install dependencies and build
+        run: |
+          npm ci
+          npm run build
+          
+      - name: Create output zip
+        run: cd build; zip -r ../fancy-gatus-${{ github.ref_name }}.zip *
+        
+      - name: Build changelog
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v5
+        with:
+          configuration: '.github/changelog-configuration.json'
+          failOnError: false
+          mode: "HYBRID"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Generate commit-based changelog if no PRs found
+        id: commit_changelog
+        if: steps.changelog.outputs.changelog == '' || contains(steps.changelog.outputs.changelog, 'No pull requests found')
+        run: |
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          
+          # Get commits between tags
+          commits=$(git log --pretty=format:"%s (%h)" ${{ github.event.before }}..${{ github.sha }})
+          
+          # Categorize commits based on conventional commit prefixes
+          features=$(echo "$commits" | grep -E "^feat(\(.+\))?: " || true)
+          fixes=$(echo "$commits" | grep -E "^fix(\(.+\))?: " || true)
+          docs=$(echo "$commits" | grep -E "^docs(\(.+\))?: " || true)
+          style=$(echo "$commits" | grep -E "^style(\(.+\))?: " || true)
+          refactor=$(echo "$commits" | grep -E "^refactor(\(.+\))?: " || true)
+          perf=$(echo "$commits" | grep -E "^perf(\(.+\))?: " || true)
+          test=$(echo "$commits" | grep -E "^test(\(.+\))?: " || true)
+          build=$(echo "$commits" | grep -E "^(build|ci)(\(.+\))?: " || true)
+          chore=$(echo "$commits" | grep -E "^(chore|deps)(\(.+\))?: " || true)
+          other=$(echo "$commits" | grep -vE "^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|deps)(\(.+\))?: " || true)
+          
+          # Generate categorized changelog
+          if [ -n "$features" ]; then
+            echo "## 🚀 Features" >> $GITHUB_OUTPUT
+            echo "$features" | sed 's/^feat[^:]*: /- /' | sed 's/ (/ (/' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -n "$fixes" ]; then
+            echo "## 🐛 Bug Fixes" >> $GITHUB_OUTPUT
+            echo "$fixes" | sed 's/^fix[^:]*: /- /' | sed 's/ (/ (/' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -n "$docs" ]; then
+            echo "## 📚 Documentation" >> $GITHUB_OUTPUT
+            echo "$docs" | sed 's/^docs[^:]*: /- /' | sed 's/ (/ (/' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -n "$style" ]; then
+            echo "## 🎨 Code Style" >> $GITHUB_OUTPUT
+            echo "$style" | sed 's/^style[^:]*: /- /' | sed 's/ (/ (/' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -n "$refactor" ]; then
+            echo "## ♻️ Refactoring" >> $GITHUB_OUTPUT
+            echo "$refactor" | sed 's/^refactor[^:]*: /- /' | sed 's/ (/ (/' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -n "$perf" ]; then
+            echo "## ⚡ Performance" >> $GITHUB_OUTPUT
+            echo "$perf" | sed 's/^perf[^:]*: /- /' | sed 's/ (/ (/' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -n "$test" ]; then
+            echo "## ✅ Tests" >> $GITHUB_OUTPUT
+            echo "$test" | sed 's/^test[^:]*: /- /' | sed 's/ (/ (/' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -n "$build" ]; then
+            echo "## 🔧 Build & CI" >> $GITHUB_OUTPUT
+            echo "$build" | sed 's/^(build|ci)[^:]*: /- /' | sed 's/ (/ (/' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -n "$chore" ]; then
+            echo "## ⤵️ Dependencies" >> $GITHUB_OUTPUT
+            echo "$chore" | sed 's/^(chore|deps)[^:]*: /- /' | sed 's/ (/ (/' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -n "$other" ]; then
+            echo "## 💭 Other Changes" >> $GITHUB_OUTPUT
+            echo "$other" | sed 's/^/- /' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "EOF" >> $GITHUB_OUTPUT
+        
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Fancy Gatus ${{ github.ref_name }}
+          body: |
+            ${{ steps.commit_changelog.outputs.changelog || steps.changelog.outputs.changelog }}
+            
+            ## 🐳 Docker Images
+            
+            Multi-platform Docker images are available at:
+            ```bash
+            docker pull ${{ env.REGISTRY }}/${{ env.REGISTRY_IMAGE }}:${{ github.ref_name }}
+            docker pull ${{ env.REGISTRY }}/${{ env.REGISTRY_IMAGE }}:latest
+            ```
+            
+            ## 🚀 Quick Start
+            
+            ### Docker Run
+            ```bash
+            docker run -d -p 3000:80 \
+              -e CONFIG_TITLE="My Status Page" \
+              -e CONFIG_HIDE_URLS="true" \
+              -e CONFIG_HIDE_FOOTER="true" \
+              ${{ env.REGISTRY }}/${{ env.REGISTRY_IMAGE }}:${{ github.ref_name }}
+            ```
+            
+            ### Docker Compose
+            ```yaml
+            version: '3.8'
+            services:
+              fancy-gatus:
+                image: ${{ env.REGISTRY }}/${{ env.REGISTRY_IMAGE }}:${{ github.ref_name }}
+                ports:
+                  - "3000:80"
+                environment:
+                  CONFIG_TITLE: "My Infrastructure Status"
+                  CONFIG_GATUS_BASE_URL: "https://status.example.com"
+                  CONFIG_HIDE_URLS: "false"
+                  CONFIG_HIDE_FOOTER: "false"
+            ```
+            
+            ## 📦 Static Build
+            
+            Download the static build zip file from the assets below and serve with any web server.
+            
+            ## 🏗️ Supported Platforms
+            - linux/amd64
+            - linux/arm64
+          files: fancy-gatus-${{ github.ref_name }}.zip
+          fail_on_unmatched_files: true
